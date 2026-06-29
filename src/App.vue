@@ -79,6 +79,7 @@ const selectedPayrollEmployeeId = ref(importedEmployees[0]?.id ?? 1)
 const selectedPayrollMonth = ref('June 2026')
 const employeeLoginError = ref('')
 const employeeSessionId = ref(null)
+const selectedEmployeeId = ref(null)
 
 const loginForm = reactive({
   username: '',
@@ -104,6 +105,23 @@ const leaveForm = reactive({
   startDate: '',
   endDate: '',
   reason: ''
+})
+
+const reviewForm = reactive({
+  employeeId: importedEmployees[0]?.id ?? 1,
+  period: '',
+  rating: 3,
+  summary: ''
+})
+
+const employeeEditForm = reactive({
+  name: '',
+  email: '',
+  department: '',
+  role: '',
+  salary: '',
+  startDate: '',
+  history: ''
 })
 
 const state = reactive({
@@ -178,6 +196,50 @@ const leaveValidationErrors = computed(() => {
   return errors
 })
 
+const reviewValidationErrors = computed(() => {
+  const errors = []
+
+  if (!Number(reviewForm.employeeId)) {
+    errors.push('Select an employee.')
+  }
+  if (!reviewForm.period.trim()) {
+    errors.push('Review period is required.')
+  }
+  if (!Number(reviewForm.rating) || Number(reviewForm.rating) < 1 || Number(reviewForm.rating) > 5) {
+    errors.push('Rating must be between 1 and 5.')
+  }
+  if (!reviewForm.summary.trim()) {
+    errors.push('Add a short performance note.')
+  }
+
+  return errors
+})
+
+const employeeEditValidationErrors = computed(() => {
+  const errors = []
+
+  if (!employeeEditForm.name.trim()) {
+    errors.push('Employee name is required.')
+  }
+  if (!/^\S+@\S+\.\S+$/.test(employeeEditForm.email.trim())) {
+    errors.push('A valid work email is required.')
+  }
+  if (!employeeEditForm.department.trim()) {
+    errors.push('Department is required.')
+  }
+  if (!employeeEditForm.role.trim()) {
+    errors.push('Role is required.')
+  }
+  if (!Number(employeeEditForm.salary) || Number(employeeEditForm.salary) < 120000) {
+    errors.push('Salary must be at least R120,000.')
+  }
+  if (!employeeEditForm.startDate) {
+    errors.push('Start date is required.')
+  }
+
+  return errors
+})
+
 const employeeById = computed(() => {
   return Object.fromEntries(state.employees.map((employee) => [employee.id, employee]))
 })
@@ -186,7 +248,7 @@ const dashboardStats = computed(() => {
   const pendingRequests = state.leaveRequests.filter((request) => request.status === 'Pending').length
   const annualPayroll = state.employees.reduce((sum, employee) => sum + employee.salary, 0)
   const averageRating =
-    state.performanceReviews.reduce((sum, review) => sum + review.rating, 0) /
+    state.performanceReviews.reduce((sum, review) => sum + (Number(review.rating) || 0), 0) /
     state.performanceReviews.length
 
   return {
@@ -254,6 +316,13 @@ const employeeSelfLatestPayslip = computed(() => {
     return null
   }
   return state.generatedPayslips.find((slip) => slip.employeeId === employeeSessionId.value) ?? null
+})
+
+const selectedEmployeeRecord = computed(() => {
+  if (!selectedEmployeeId.value) {
+    return null
+  }
+  return state.employees.find((employee) => employee.id === selectedEmployeeId.value) ?? null
 })
 
 watch(
@@ -351,6 +420,80 @@ function addEmployee() {
   employeeForm.startDate = ''
 }
 
+function selectEmployeeForEdit(employeeId) {
+  const employee = state.employees.find((item) => item.id === employeeId)
+  if (!employee) {
+    return
+  }
+
+  selectedEmployeeId.value = employee.id
+  employeeEditForm.name = employee.name
+  employeeEditForm.email = employee.email
+  employeeEditForm.department = employee.department
+  employeeEditForm.role = employee.role
+  employeeEditForm.salary = employee.salary
+  employeeEditForm.startDate = employee.startDate
+  employeeEditForm.history = employee.history
+}
+
+function updateSelectedEmployee() {
+  if (!selectedEmployeeRecord.value || employeeEditValidationErrors.value.length) {
+    return
+  }
+
+  selectedEmployeeRecord.value.name = employeeEditForm.name.trim()
+  selectedEmployeeRecord.value.email = employeeEditForm.email.trim()
+  selectedEmployeeRecord.value.department = employeeEditForm.department.trim()
+  selectedEmployeeRecord.value.role = employeeEditForm.role.trim()
+  selectedEmployeeRecord.value.salary = Number(employeeEditForm.salary)
+  selectedEmployeeRecord.value.startDate = employeeEditForm.startDate
+  selectedEmployeeRecord.value.history = employeeEditForm.history.trim() || 'Updated through HR portal.'
+}
+
+function removeSelectedEmployee() {
+  if (!selectedEmployeeRecord.value) {
+    return
+  }
+
+  const targetId = selectedEmployeeRecord.value.id
+
+  state.employees = state.employees.filter((employee) => employee.id !== targetId)
+  state.attendance = state.attendance.filter((record) => record.employeeId !== targetId)
+  state.leaveRequests = state.leaveRequests.filter((request) => request.employeeId !== targetId)
+  state.payrollSource = state.payrollSource.filter((entry) => entry.employeeId !== targetId)
+  state.generatedPayslips = state.generatedPayslips.filter((slip) => slip.employeeId !== targetId)
+  state.performanceReviews = state.performanceReviews.filter((review) => review.employeeId !== targetId)
+
+  if (employeeSessionId.value === targetId) {
+    logout()
+  }
+
+  if (selectedPayrollEmployeeId.value === targetId) {
+    selectedPayrollEmployeeId.value = state.employees[0]?.id ?? null
+  }
+
+  if (reviewForm.employeeId === targetId) {
+    reviewForm.employeeId = state.employees[0]?.id ?? null
+  }
+
+  if (leaveForm.employeeId === targetId) {
+    leaveForm.employeeId = state.employees[0]?.id ?? null
+  }
+
+  if (employeeLoginForm.employeeId === targetId) {
+    employeeLoginForm.employeeId = state.employees[0]?.id ?? null
+  }
+
+  selectedEmployeeId.value = null
+  employeeEditForm.name = ''
+  employeeEditForm.email = ''
+  employeeEditForm.department = ''
+  employeeEditForm.role = ''
+  employeeEditForm.salary = ''
+  employeeEditForm.startDate = ''
+  employeeEditForm.history = ''
+}
+
 function submitLeaveRequest() {
   if (leaveValidationErrors.value.length) {
     return
@@ -395,6 +538,46 @@ function updateLeaveStatus(requestId, newStatus) {
     const leaveDays = getDateRangeLength(targetRequest.startDate, targetRequest.endDate)
     attendanceRecord.leaveDays += leaveDays
   }
+}
+
+function addPerformanceReview() {
+  if (reviewValidationErrors.value.length) {
+    return
+  }
+
+  const newId = Math.max(0, ...state.performanceReviews.map((review) => review.id)) + 1
+
+  state.performanceReviews.unshift({
+    id: newId,
+    employeeId: Number(reviewForm.employeeId),
+    period: reviewForm.period.trim(),
+    rating: Number(reviewForm.rating),
+    summary: reviewForm.summary.trim()
+  })
+
+  reviewForm.period = ''
+  reviewForm.rating = 3
+  reviewForm.summary = ''
+}
+
+function normalizeReviewRating(review) {
+  const parsed = Number(review.rating)
+  if (Number.isNaN(parsed)) {
+    review.rating = 1
+    return
+  }
+
+  review.rating = Math.min(5, Math.max(1, Math.round(parsed * 10) / 10))
+}
+
+function normalizeDraftReviewRating() {
+  const parsed = Number(reviewForm.rating)
+  if (Number.isNaN(parsed)) {
+    reviewForm.rating = 1
+    return
+  }
+
+  reviewForm.rating = Math.min(5, Math.max(1, Math.round(parsed * 10) / 10))
 }
 
 function generatePayslip() {
@@ -466,7 +649,7 @@ function formatDate(dateValue) {
         <div class="col-12 col-md-10 col-lg-6">
           <div class="panel-card p-4 p-lg-5 reveal-in">
             <span class="eyebrow">ModernTech HR Portal</span>
-            <h1 class="hero-title mt-2">HR System Proof of Concept</h1>
+            <h1 class="hero-title mt-2">Modern Tech HR System</h1>
             <p class="text-muted mb-4">
               Demo login for the mock authentication bonus requirement.
             </p>
@@ -654,6 +837,9 @@ function formatDate(dateValue) {
           <div class="col-12 col-xl-8">
             <article class="panel-card p-3 p-lg-4 h-100">
               <h3 class="section-title">Employee Data Repository</h3>
+              <p class="small text-muted">
+                Click an employee name to open editing and removal tools for that specific profile.
+              </p>
               <div class="table-responsive">
                 <table class="table align-middle">
                   <thead>
@@ -668,7 +854,13 @@ function formatDate(dateValue) {
                   <tbody>
                     <tr v-for="employee in state.employees" :key="employee.id">
                       <td>
-                        <strong>{{ employee.name }}</strong>
+                        <button
+                          type="button"
+                          class="btn btn-link p-0 text-decoration-none fw-semibold"
+                          @click="selectEmployeeForEdit(employee.id)"
+                        >
+                          {{ employee.name }}
+                        </button>
                         <div class="small text-muted">{{ employee.email }}</div>
                       </td>
                       <td>{{ employee.department }}</td>
@@ -678,6 +870,59 @@ function formatDate(dateValue) {
                     </tr>
                   </tbody>
                 </table>
+              </div>
+
+              <div class="mt-4">
+                <article v-if="selectedEmployeeRecord" class="request-card p-3">
+                  <h4 class="section-title mb-3">Edit Selected Employee</h4>
+                  <form @submit.prevent="updateSelectedEmployee" class="row g-3">
+                    <div class="col-12 col-md-6">
+                      <label class="form-label">Full Name</label>
+                      <input v-model="employeeEditForm.name" class="form-control" />
+                    </div>
+                    <div class="col-12 col-md-6">
+                      <label class="form-label">Work Email</label>
+                      <input v-model="employeeEditForm.email" class="form-control" type="email" />
+                    </div>
+                    <div class="col-12 col-md-6">
+                      <label class="form-label">Department</label>
+                      <input v-model="employeeEditForm.department" class="form-control" />
+                    </div>
+                    <div class="col-12 col-md-6">
+                      <label class="form-label">Role</label>
+                      <input v-model="employeeEditForm.role" class="form-control" />
+                    </div>
+                    <div class="col-12 col-md-6">
+                      <label class="form-label">Annual Salary (ZAR)</label>
+                      <input v-model="employeeEditForm.salary" class="form-control" type="number" />
+                    </div>
+                    <div class="col-12 col-md-6">
+                      <label class="form-label">Start Date</label>
+                      <input v-model="employeeEditForm.startDate" class="form-control" type="date" />
+                    </div>
+                    <div class="col-12">
+                      <label class="form-label">Employment History</label>
+                      <textarea v-model="employeeEditForm.history" class="form-control" rows="3"></textarea>
+                    </div>
+
+                    <div v-if="employeeEditValidationErrors.length" class="col-12">
+                      <div class="alert alert-warning mb-0 py-2">
+                        <div v-for="error in employeeEditValidationErrors" :key="error">{{ error }}</div>
+                      </div>
+                    </div>
+
+                    <div class="col-12 d-flex gap-2 flex-wrap">
+                      <button class="btn btn-aurora" type="submit">Save Changes</button>
+                      <button class="btn btn-outline-danger" type="button" @click="removeSelectedEmployee">
+                        Remove Employee
+                      </button>
+                    </div>
+                  </form>
+                </article>
+
+                <p v-else class="small text-muted mb-0">
+                  Select an employee name above to edit or remove that specific profile.
+                </p>
               </div>
             </article>
           </div>
@@ -878,25 +1123,96 @@ function formatDate(dateValue) {
         </section>
 
         <section v-if="activeTab === 'reviews'" class="row g-3 g-lg-4">
-          <div class="col-12">
+          <div class="col-12 col-lg-4">
+            <article class="panel-card p-3 p-lg-4 h-100">
+              <h3 class="section-title">Add Review</h3>
+              <form @submit.prevent="addPerformanceReview" class="row g-3">
+                <div class="col-12">
+                  <label class="form-label">Employee</label>
+                  <select v-model="reviewForm.employeeId" class="form-select">
+                    <option v-for="employee in state.employees" :key="employee.id" :value="employee.id">
+                      {{ employee.name }}
+                    </option>
+                  </select>
+                </div>
+                <div class="col-12">
+                  <label class="form-label">Review Period</label>
+                  <input v-model="reviewForm.period" class="form-control" placeholder="Q3 2026" />
+                </div>
+                <div class="col-12">
+                  <label class="form-label">Rating (1 to 5)</label>
+                  <input
+                    v-model.number="reviewForm.rating"
+                    class="form-control"
+                    type="number"
+                    min="1"
+                    max="5"
+                    step="0.1"
+                    @blur="normalizeDraftReviewRating"
+                  />
+                </div>
+                <div class="col-12">
+                  <label class="form-label">HR Performance Notes</label>
+                  <textarea
+                    v-model="reviewForm.summary"
+                    class="form-control"
+                    rows="4"
+                    placeholder="Write your assessment of the employee's performance..."
+                  ></textarea>
+                </div>
+
+                <div v-if="reviewValidationErrors.length" class="col-12">
+                  <div class="alert alert-warning mb-0 py-2">
+                    <div v-for="error in reviewValidationErrors" :key="error">{{ error }}</div>
+                  </div>
+                </div>
+
+                <div class="col-12 d-grid">
+                  <button class="btn btn-aurora" type="submit">Save Review Record</button>
+                </div>
+              </form>
+            </article>
+          </div>
+
+          <div class="col-12 col-lg-8">
             <article class="panel-card p-3 p-lg-4">
               <h3 class="section-title">Performance Review Records</h3>
+              <p class="text-muted small">
+                HR can edit ratings and notes directly in the table below.
+              </p>
               <div class="table-responsive">
                 <table class="table align-middle">
                   <thead>
                     <tr>
                       <th>Employee</th>
                       <th>Period</th>
-                      <th>Rating</th>
-                      <th>Summary</th>
+                      <th style="min-width: 150px">Rating</th>
+                      <th style="min-width: 280px">Summary</th>
                     </tr>
                   </thead>
                   <tbody>
                     <tr v-for="review in state.performanceReviews" :key="review.id">
                       <td>{{ employeeById[review.employeeId]?.name }}</td>
                       <td>{{ review.period }}</td>
-                      <td>{{ review.rating.toFixed(1) }}</td>
-                      <td>{{ review.summary }}</td>
+                      <td>
+                        <input
+                          v-model.number="review.rating"
+                          class="form-control form-control-sm"
+                          type="number"
+                          min="1"
+                          max="5"
+                          step="0.1"
+                          @blur="normalizeReviewRating(review)"
+                        />
+                      </td>
+                      <td>
+                        <textarea
+                          v-model="review.summary"
+                          class="form-control form-control-sm"
+                          rows="2"
+                          placeholder="Write HR comments..."
+                        ></textarea>
+                      </td>
                     </tr>
                   </tbody>
                 </table>
