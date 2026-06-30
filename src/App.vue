@@ -80,6 +80,9 @@ const selectedPayrollMonth = ref('June 2026')
 const employeeLoginError = ref('')
 const employeeSessionId = ref(null)
 const selectedEmployeeId = ref(null)
+const employeeWorkMode = ref('On Site')
+const employeeClockMessage = ref('')
+const employeeClockMessageType = ref('info')
 
 const loginForm = reactive({
   username: '',
@@ -128,6 +131,7 @@ const state = reactive({
   employees: importedEmployees,
   leaveRequests: importedLeaveRequests,
   attendance: importedAttendance,
+  attendanceLogs: [],
   performanceReviews: [
     {
       id: 1,
@@ -297,6 +301,38 @@ const employeeSelfAttendance = computed(() => {
   )
 })
 
+const employeeActiveShift = computed(() => {
+  if (!employeeSessionId.value) {
+    return null
+  }
+
+  return (
+    state.attendanceLogs.find(
+      (log) => log.employeeId === employeeSessionId.value && !log.clockOutAt
+    ) ?? null
+  )
+})
+
+const employeeSelfRecentAttendanceLogs = computed(() => {
+  if (!employeeSessionId.value) {
+    return []
+  }
+
+  return state.attendanceLogs
+    .filter((log) => log.employeeId === employeeSessionId.value)
+    .sort((a, b) => new Date(b.clockInAt) - new Date(a.clockInAt))
+    .slice(0, 5)
+})
+
+const hrAttendanceLogs = computed(() => {
+  return [...state.attendanceLogs]
+    .sort((a, b) => new Date(b.clockInAt) - new Date(a.clockInAt))
+    .map((log) => ({
+      ...log,
+      employeeName: employeeById.value[log.employeeId]?.name ?? 'Unknown'
+    }))
+})
+
 const employeeSelfLeaveRequests = computed(() => {
   if (!employeeSessionId.value) {
     return []
@@ -346,6 +382,7 @@ function bootstrapFromLocalStorage() {
     state.employees = parsed.employees ?? state.employees
     state.leaveRequests = parsed.leaveRequests ?? state.leaveRequests
     state.attendance = parsed.attendance ?? state.attendance
+    state.attendanceLogs = parsed.attendanceLogs ?? state.attendanceLogs
     state.performanceReviews = parsed.performanceReviews ?? state.performanceReviews
     state.payrollSource = parsed.payrollSource ?? state.payrollSource
     state.generatedPayslips = parsed.generatedPayslips ?? state.generatedPayslips
@@ -380,6 +417,8 @@ function loginEmployee() {
 
   employeeSessionId.value = employee.id
   authRole.value = 'employee'
+  employeeWorkMode.value = 'On Site'
+  employeeClockMessage.value = ''
   employeeLoginError.value = ''
   loginError.value = ''
 }
@@ -390,6 +429,99 @@ function logout() {
   loginForm.username = ''
   loginForm.password = ''
   employeeLoginForm.email = ''
+  employeeClockMessage.value = ''
+}
+
+function setEmployeeClockMessage(message, type = 'info') {
+  employeeClockMessage.value = message
+  employeeClockMessageType.value = type
+}
+
+function getCurrentDayKey(dateValue = new Date()) {
+  const year = dateValue.getFullYear()
+  const month = String(dateValue.getMonth() + 1).padStart(2, '0')
+  const day = String(dateValue.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+function ensureEmployeeAttendanceRecord(employeeId) {
+  let attendanceRecord = state.attendance.find((record) => record.employeeId === employeeId)
+  if (!attendanceRecord) {
+    attendanceRecord = { employeeId, present: 0, remote: 0, absent: 0, leaveDays: 0 }
+    state.attendance.push(attendanceRecord)
+  }
+  return attendanceRecord
+}
+
+function clockInEmployee() {
+  if (!employeeSessionId.value) {
+    setEmployeeClockMessage('Please log in first.', 'danger')
+    return
+  }
+
+  if (employeeActiveShift.value) {
+    setEmployeeClockMessage('You are already clocked in. Clock out before starting a new shift.', 'warning')
+    return
+  }
+
+  const now = new Date()
+  const todayKey = getCurrentDayKey(now)
+  const alreadyClosedToday = state.attendanceLogs.some(
+    (log) =>
+      log.employeeId === employeeSessionId.value &&
+      log.workDate === todayKey &&
+      Boolean(log.clockOutAt)
+  )
+
+  if (alreadyClosedToday) {
+    setEmployeeClockMessage('You already completed your shift for today.', 'warning')
+    return
+  }
+
+  state.attendanceLogs.unshift({
+    id: Date.now(),
+    employeeId: employeeSessionId.value,
+    workDate: todayKey,
+    workMode: employeeWorkMode.value,
+    clockInAt: now.toISOString(),
+    clockOutAt: null,
+    workedHours: 0
+  })
+
+  setEmployeeClockMessage(`Clock-in captured for ${employeeWorkMode.value}.`, 'success')
+}
+
+function clockOutEmployee() {
+  if (!employeeSessionId.value) {
+    setEmployeeClockMessage('Please log in first.', 'danger')
+    return
+  }
+
+  const activeShift = employeeActiveShift.value
+  if (!activeShift) {
+    setEmployeeClockMessage('No active shift found. Clock in first.', 'warning')
+    return
+  }
+
+  const now = new Date()
+  const clockInAt = new Date(activeShift.clockInAt)
+  const workedHours = Math.max(0.25, (now - clockInAt) / (1000 * 60 * 60))
+  activeShift.clockOutAt = now.toISOString()
+  activeShift.workedHours = Math.round(workedHours * 100) / 100
+
+  const attendanceRecord = ensureEmployeeAttendanceRecord(activeShift.employeeId)
+  if (activeShift.workMode === 'Remote') {
+    attendanceRecord.remote += 1
+  } else {
+    attendanceRecord.present += 1
+  }
+
+  const payrollRecord = state.payrollSource.find((entry) => entry.employeeId === activeShift.employeeId)
+  if (payrollRecord) {
+    payrollRecord.hoursWorked = Math.round((Number(payrollRecord.hoursWorked) + activeShift.workedHours) * 100) / 100
+  }
+
+  setEmployeeClockMessage('Clock-out captured and synced to HR attendance.', 'success')
 }
 
 function addEmployee() {
@@ -635,6 +767,17 @@ function formatDate(dateValue) {
     day: '2-digit',
     month: 'short',
     year: 'numeric'
+  })
+}
+
+function formatTime(dateValue) {
+  if (!dateValue) {
+    return 'In progress'
+  }
+
+  return new Date(dateValue).toLocaleTimeString('en-ZA', {
+    hour: '2-digit',
+    minute: '2-digit'
   })
 }
 </script>
@@ -1012,7 +1155,7 @@ function formatDate(dateValue) {
             <article class="panel-card p-3 p-lg-4">
               <h3 class="section-title">Attendance Tracking</h3>
               <p class="small text-muted">
-                Approved leave requests automatically increase leave day totals.
+                Clock-out events from employee dashboards sync here with remote or on-site tags.
               </p>
 
               <div class="table-responsive">
@@ -1033,6 +1176,39 @@ function formatDate(dateValue) {
                       <td>{{ record.remote }}</td>
                       <td>{{ record.absent }}</td>
                       <td>{{ record.leaveDays }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <h4 class="section-title mt-4">Clock Logs</h4>
+              <div class="table-responsive">
+                <table class="table align-middle">
+                  <thead>
+                    <tr>
+                      <th>Employee</th>
+                      <th>Date</th>
+                      <th>Mode</th>
+                      <th>Clock In</th>
+                      <th>Clock Out</th>
+                      <th>Hours</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="log in hrAttendanceLogs" :key="log.id">
+                      <td>{{ log.employeeName }}</td>
+                      <td>{{ formatDate(log.workDate) }}</td>
+                      <td>
+                        <span class="badge" :class="log.workMode === 'Remote' ? 'text-bg-info' : 'text-bg-success'">
+                          {{ log.workMode }}
+                        </span>
+                      </td>
+                      <td>{{ formatTime(log.clockInAt) }}</td>
+                      <td>{{ formatTime(log.clockOutAt) }}</td>
+                      <td>{{ log.clockOutAt ? log.workedHours.toFixed(2) : '-' }}</td>
+                    </tr>
+                    <tr v-if="!hrAttendanceLogs.length">
+                      <td colspan="6" class="text-muted">No clock events yet.</td>
                     </tr>
                   </tbody>
                 </table>
@@ -1237,6 +1413,43 @@ function formatDate(dateValue) {
         </header>
 
         <section class="row g-3 g-lg-4">
+          <div class="col-12">
+            <article class="panel-card p-3 p-lg-4">
+              <h3 class="section-title">Clock In / Clock Out</h3>
+              <p class="small text-muted mb-3">
+                Select where you are working today and clock in. HR attendance updates when you clock out.
+              </p>
+
+              <div class="row g-3 align-items-end">
+                <div class="col-12 col-md-4">
+                  <label class="form-label">Work Mode</label>
+                  <select v-model="employeeWorkMode" class="form-select" :disabled="Boolean(employeeActiveShift)">
+                    <option value="On Site">On Site</option>
+                    <option value="Remote">Remote</option>
+                  </select>
+                </div>
+                <div class="col-12 col-md-8 d-flex flex-wrap gap-2">
+                  <button class="btn btn-aurora" type="button" @click="clockInEmployee" :disabled="Boolean(employeeActiveShift)">
+                    Clock In
+                  </button>
+                  <button class="btn btn-outline-dark" type="button" @click="clockOutEmployee" :disabled="!employeeActiveShift">
+                    Clock Out
+                  </button>
+                  <span
+                    class="badge align-self-center"
+                    :class="employeeActiveShift ? 'text-bg-success' : 'text-bg-secondary'"
+                  >
+                    {{ employeeActiveShift ? `Active Shift (${employeeActiveShift.workMode})` : 'Not Clocked In' }}
+                  </span>
+                </div>
+              </div>
+
+              <div v-if="employeeClockMessage" class="alert py-2 mt-3 mb-0" :class="`alert-${employeeClockMessageType}`">
+                {{ employeeClockMessage }}
+              </div>
+            </article>
+          </div>
+
           <div class="col-12 col-lg-6">
             <article class="panel-card p-3 p-lg-4 h-100">
               <h3 class="section-title">My Profile</h3>
@@ -1271,6 +1484,17 @@ function formatDate(dateValue) {
               <div class="small mb-2"><strong>Remote:</strong> {{ employeeSelfAttendance?.remote ?? 0 }}</div>
               <div class="small mb-2"><strong>Absent:</strong> {{ employeeSelfAttendance?.absent ?? 0 }}</div>
               <div class="small mb-0"><strong>Approved Leave Days:</strong> {{ employeeSelfAttendance?.leaveDays ?? 0 }}</div>
+
+              <h4 class="section-title mt-4 mb-2">Recent Clock Logs</h4>
+              <div v-if="employeeSelfRecentAttendanceLogs.length" class="d-flex flex-column gap-2">
+                <div v-for="log in employeeSelfRecentAttendanceLogs" :key="log.id" class="request-card">
+                  <div class="small"><strong>Date:</strong> {{ formatDate(log.workDate) }}</div>
+                  <div class="small"><strong>Mode:</strong> {{ log.workMode }}</div>
+                  <div class="small"><strong>Clock In:</strong> {{ formatTime(log.clockInAt) }}</div>
+                  <div class="small"><strong>Clock Out:</strong> {{ formatTime(log.clockOutAt) }}</div>
+                </div>
+              </div>
+              <p v-else class="small text-muted mb-0 mt-2">No clock logs yet.</p>
             </article>
           </div>
 
